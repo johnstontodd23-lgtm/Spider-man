@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Spider Sense Sentry</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: full-height phone page; camera on top, controls stacked below; stays readable propped on a shelf */
+  :root {
+    --bg: #07090d; --panel: #10141c; --fg: #dfe6ee; --muted: #7d8898;
+    --sense: #ff3b3b; --ok: #5ee0a0; --line: #1e2633;
+    --display: "Rajdhani", "Arial Narrow", sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mono); font-size: 14px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px)); }
+  .wrap { max-width: 520px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { font-family: var(--display); font-weight: 700; font-size: 34px; letter-spacing: .04em; line-height: 1; margin: 0; text-transform: uppercase; }
+  h1 span { color: var(--sense); }
+  .label { font-family: var(--display); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 14px; display: grid; gap: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button { font-family: var(--display); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 18px; padding: 12px 20px; border: 2px solid var(--sense); background: var(--sense); color: #140000; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+  button[disabled] { opacity: .4; }
+  input { font-family: var(--mono); font-size: 22px; letter-spacing: .2em; text-transform: uppercase; background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 10px 12px; width: 9ch; }
+  .stage { position: relative; background: #000; border: 1px solid var(--line); aspect-ratio: 3/4; max-width: 100%; overflow: hidden; }
+  .stage.armed { border-color: var(--sense); }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .status { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+  .status.bad { color: var(--sense); }
+  .status.good { color: var(--ok); }
+  .big { font-family: var(--display); font-size: 44px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big.alert { color: var(--sense); }
+  ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .stat { border-top: 2px solid var(--line); padding-top: 6px; }
+  .stat b { font-family: var(--display); font-size: 26px; display: block; line-height: 1; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sentry <span>Cam</span></h1>
+
+  <div class="panel">
+    <div class="label">Room code (same as the headset)</div>
+    <div class="row">
+      <input id="room" maxlength="6" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="ABC123">
+      <button id="start">Start watching</button>
+      <button id="stop" class="secondary" hidden>Stop</button>
+    </div>
+    <div id="status" class="status">Enter the code shown on the headset page, then press Start.</div>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="stats">
+      <div class="stat"><span class="label">People now</span><b id="s-people" class="big">0</b></div>
+      <div class="stat"><span class="label">Frames / sec</span><b id="s-fps">0</b></div>
+      <div class="stat"><span class="label">Sent</span><b id="s-sent">0</b></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label">Setup</div>
+    <ol>
+      <li>Prop the phone up so its back camera sees the area you want watched (the door, the hallway, behind your chair).</li>
+      <li>Keep the phone plugged in. The page keeps the screen awake while watching.</li>
+      <li>Only direction and size of detected people leave this phone. No video is sent anywhere.</li>
+    </ol>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
+  var statusEl = $('status'), roomEl = $('room'), startBtn = $('start'), stopBtn = $('stop'), stage = $('stage');
+  var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081'];
+  var model = null, client = null, stream = null, running = false, sent = 0, wake = null;
+
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = 'status' + (cls ? ' ' + cls : ''); }
+  try { roomEl.value = localStorage.getItem('ss-room') || ''; } catch (e) {}
+
+  function topicFor(room) { return 'spidersense/' + room + '/det'; }
+
+  function connect(room) {
+    return new Promise(function (resolve, reject) {
+      var i = 0;
+      function tryNext() {
+        if (i >= BROKERS.length) return reject(new Error('could not reach a relay'));
+        var url = BROKERS[i++];
+        setStatus('Connecting to relay…');
+        var c = mqtt.connect(url, { clientId: 'sentry-' + Math.random().toString(16).slice(2, 10), keepalive: 20, reconnectPeriod: 2000, connectTimeout: 6000 });
+        var settled = false;
+        c.on('connect', function () { if (settled) return; settled = true; resolve(c); });
+        c.on('error', function () { if (settled) return; settled = true; c.end(true); tryNext(); });
+        setTimeout(function () { if (!settled) { settled = true; c.end(true); tryNext(); } }, 7000);
+      }
+      tryNext();
+    });
+  }
+
+  function fitCanvas() {
+    overlay.width = video.videoWidth || 720; overlay.height = video.videoHeight || 960;
+  }
+
+  var lastT = 0, fpsAcc = 0, fpsN = 0, lastBeat = 0;
+  function loop() {
+    if (!running) return;
+    var now = performance.now();
+    model.detect(video, 10, 0.45).then(function (preds) {
+      if (!running) return;
+      var W = overlay.width, H = overlay.height;
+      ctx.clearRect(0, 0, W, H);
+      var people = [];
+      for (var k = 0; k < preds.length; k++) {
+        var p = preds[k]; if (p.class !== 'person') continue;
+        var b = p.bbox; // [x, y, w, h] in video pixels
+        people.push({ x: +(((b[0] + b[2] / 2) / W) * 2 - 1).toFixed(3), h: +(b[3] / H).toFixed(3), s: +p.score.toFixed(2) });
+        ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 4; ctx.strokeRect(b[0], b[1], b[2], b[3]);
+        ctx.fillStyle = 'rgba(255,59,59,.85)'; ctx.fillRect(b[0], b[1] - 26, 110, 26);
+        ctx.fillStyle = '#140000'; ctx.font = 'bold 18px Rajdhani, sans-serif'; ctx.fillText('PERSON ' + Math.round(p.score * 100) + '%', b[0] + 6, b[1] - 7);
+      }
+      $('s-people').textContent = people.length;
+      $('s-people').className = 'big' + (people.length ? ' alert' : '');
+      stage.classList.toggle('armed', people.length > 0);
+
+      var portrait = H >= W;
+      var msg = { t: Date.now(), fovH: portrait ? 55 : 69, fovV: portrait ? 69 : 55, people: people };
+      // send every frame with people, otherwise a heartbeat every 1.5 s
+      if (people.length || now - lastBeat > 1500) {
+        lastBeat = now;
+        try { client.publish(topicFor(roomEl.value.trim().toUpperCase()), JSON.stringify(msg), { qos: 0, retain: false }); sent++; $('s-sent').textContent = sent; } catch (e) {}
+      }
+      var dt = now - lastT; lastT = now;
+      if (dt > 0) { fpsAcc += 1000 / dt; fpsN++; if (fpsN >= 10) { $('s-fps').textContent = Math.round(fpsAcc / fpsN); fpsAcc = 0; fpsN = 0; } }
+      setTimeout(loop, 60);
+    }).catch(function (e) { setStatus('Detector error: ' + e.message, 'bad'); setTimeout(loop, 500); });
+  }
+
+  startBtn.addEventListener('click', function () {
+    var room = roomEl.value.trim().toUpperCase();
+    if (room.length < 4) { setStatus('Type the room code from the headset page first.', 'bad'); return; }
+    try { localStorage.setItem('ss-room', room); } catch (e) {}
+    startBtn.disabled = true;
+    var p = navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+      ? navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      : Promise.reject(new Error('camera not available in this browser'));
+    setStatus('Asking for the camera…');
+    p.then(function (s) {
+      stream = s; video.srcObject = s;
+      return new Promise(function (res) { video.onloadedmetadata = function () { video.play().then(res, res); }; });
+    }).then(function () {
+      fitCanvas();
+      setStatus('Loading the person detector (first time takes ~10 s)…');
+      return cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    }).then(function (m) {
+      model = m;
+      return connect(room);
+    }).then(function (c) {
+      client = c;
+      c.on('close', function () { if (running) setStatus('Relay dropped, reconnecting…', 'bad'); });
+      c.on('connect', function () { if (running) setStatus('Watching. Room ' + room + '.', 'good'); });
+      running = true; lastT = performance.now();
+      setStatus('Watching. Room ' + room + '.', 'good');
+      startBtn.hidden = true; stopBtn.hidden = false; roomEl.disabled = true;
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { wake = w; }).catch(function () {});
+      loop();
+    }).catch(function (e) {
+      startBtn.disabled = false;
+      setStatus('Could not start: ' + (e && e.message ? e.message : e), 'bad');
+    });
+  });
+  stopBtn.addEventListener('click', function () {
+    running = false;
+    if (client) { try { client.end(true); } catch (e) {} client = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    startBtn.hidden = false; startBtn.disabled = false; stopBtn.hidden = true; roomEl.disabled = false;
+    stage.classList.remove('armed');
+    setStatus('Stopped.');
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && running && navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { wake = w; }).catch(function () {});
+  });
+})();
+</script>
+</body>
+</html>
