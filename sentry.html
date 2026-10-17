@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Spider Sense Sentry</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: full-height phone page; camera on top, controls stacked below; stays readable propped on a shelf */
+  :root {
+    --bg: #07090d; --panel: #10141c; --fg: #dfe6ee; --muted: #7d8898;
+    --sense: #ff3b3b; --ok: #5ee0a0; --line: #1e2633;
+    --display: "Rajdhani", "Arial Narrow", sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mono); font-size: 14px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px)); }
+  .wrap { max-width: 520px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { font-family: var(--display); font-weight: 700; font-size: 34px; letter-spacing: .04em; line-height: 1; margin: 0; text-transform: uppercase; }
+  h1 span { color: var(--sense); }
+  .label { font-family: var(--display); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); padding: 14px; display: grid; gap: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button { font-family: var(--display); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 18px; padding: 12px 20px; border: 2px solid var(--sense); background: var(--sense); color: #140000; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+  button[disabled] { opacity: .4; }
+  input { font-family: var(--mono); font-size: 22px; letter-spacing: .2em; text-transform: uppercase; background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 10px 12px; width: 9ch; }
+  .stage { position: relative; background: #000; border: 1px solid var(--line); aspect-ratio: 3/4; max-width: 100%; overflow: hidden; }
+  .stage.armed { border-color: var(--sense); }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .stage .hud { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+  .pill { font-family: var(--display); font-weight: 700; font-size: 14px; letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px; background: rgba(7,9,13,.75); color: var(--fg); border: 1px solid var(--line); }
+  .pill.alert { background: rgba(255,59,59,.85); color: #140000; border-color: var(--sense); }
+  .pill.warn { background: rgba(255,210,59,.9); color: #140000; border-color: #ffd23b; }
+  .stage .fs { position: absolute; top: 10px; right: 10px; font-size: 13px; padding: 7px 12px; background: rgba(7,9,13,.75); color: var(--fg); border: 1px solid var(--line); }
+  /* maximized fallback: covers the whole screen when the browser has no fullscreen API (iPhone Safari) */
+  .stage.max { position: fixed; inset: 0; z-index: 50; aspect-ratio: auto; border: 0; max-width: none; }
+  .stage.max .hud { bottom: max(14px, env(safe-area-inset-bottom, 0px)); left: max(14px, env(safe-area-inset-left, 0px)); }
+  .stage.max .fs { top: max(14px, env(safe-area-inset-top, 0px)); right: max(14px, env(safe-area-inset-right, 0px)); font-size: 16px; padding: 10px 16px; }
+  .stage:fullscreen, .stage:-webkit-full-screen { width: 100vw; height: 100vh; aspect-ratio: auto; border: 0; }
+  body.maxed { overflow: hidden; }
+  .status { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+  .status.bad { color: var(--sense); }
+  .status.good { color: var(--ok); }
+  .big { font-family: var(--display); font-size: 44px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big.alert { color: var(--sense); }
+  ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { border-top: 2px solid var(--line); padding-top: 6px; }
+  .stat b { font-family: var(--display); font-size: 26px; display: block; line-height: 1; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sentry <span>Cam</span></h1>
+
+  <div class="panel">
+    <div class="label">Room code (same as the headset)</div>
+    <div class="row">
+      <input id="room" maxlength="6" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="ABC123">
+      <button id="start">Start watching</button>
+      <button id="stop" class="secondary" hidden>Stop</button>
+    </div>
+    <div id="status" class="status">Enter the code shown on the headset page, then press Start.</div>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div class="hud">
+      <span class="pill" id="pill-people">0 people</span>
+      <span class="pill warn" id="pill-weapon" hidden>none</span>
+      <span class="pill" id="pill-gun">gun detector off</span>
+    </div>
+    <button class="fs" id="full" aria-label="Full screen">Full screen</button>
+  </div>
+
+  <div class="panel">
+    <div class="stats">
+      <div class="stat"><span class="label">People now</span><b id="s-people" class="big">0</b></div>
+      <div class="stat"><span class="label">Frames / sec</span><b id="s-fps">0</b></div>
+      <div class="stat"><span class="label">Sent</span><b id="s-sent">0</b></div>
+      <div class="stat"><span class="label">Gun detector</span><b id="s-gun" style="font-size:20px">off</b></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label">Setup</div>
+    <ol>
+      <li>Prop the phone up so its back camera sees the area you want watched (the door, the hallway, behind your chair).</li>
+      <li>Keep the phone plugged in. The page keeps the screen awake while watching.</li>
+      <li>Only direction and size of detected people and objects leave this phone. No video is sent anywhere.</li>
+      <li>Nothing is reported on the first sighting. A person has to show up in three frames in a row, a weapon in two, before it counts. Dashed boxes are things the phone has seen once and is still deciding about.</li>
+      <li>Knives, bats and scissors get a yellow box and a stronger alert on the headset. The detector catches a knife in plain view in good light; a knife in a moving hand across a room is often missed.</li>
+      <li>A second detector looks for guns about twice a second once "Gun detector" says ready. In testing it caught a handgun within about 2 m of the phone in good light and missed it beyond that. Expect occasional misses and the odd false alarm on dark, gun-shaped objects.</li>
+    </ol>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.wasm.min.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
+  var statusEl = $('status'), roomEl = $('room'), startBtn = $('start'), stopBtn = $('stop'), stage = $('stage');
+  var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081'];
+  var model = null, client = null, stream = null, running = false, sent = 0, wake = null;
+
+  // ---------- gun detector (YOLOv8n, single class, runs beside the person detector) ----------
+  var GUN_THRESH = 0.45, GUN_SIZE = 640;   // per-frame floor; the tracker demands two hits in a row before reporting
+  var gunSess = null, gunBusy = false, gunBoxes = [], gunLastAt = 0, gunState = 'off';
+  var gunCanvas = document.createElement('canvas'); gunCanvas.width = gunCanvas.height = GUN_SIZE;
+  var gunCtx = gunCanvas.getContext('2d', { willReadFrequently: true });
+  var gunInput = new Float32Array(3 * GUN_SIZE * GUN_SIZE);
+  function loadGun() {
+    if (!window.ort) { gunState = 'failed'; $('s-gun').textContent = 'no lib'; return Promise.resolve(); }
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/';
+    gunState = 'loading'; $('s-gun').textContent = 'loading';
+    return ort.InferenceSession.create('gun.onnx', { executionProviders: ['wasm'] }).then(function (s) {
+      gunSess = s; gunState = 'ready'; $('s-gun').textContent = 'ready';
+    }).catch(function (e) { gunState = 'failed'; $('s-gun').textContent = 'failed'; console.warn('gun model', e); });
+  }
+  function runGun() {
+    if (!gunSess || gunBusy || !running) return;
+    var W = video.videoWidth, H = video.videoHeight; if (!W || !H) return;
+    gunBusy = true;
+    var r = GUN_SIZE / Math.max(W, H), nw = Math.round(W * r), nh = Math.round(H * r);
+    gunCtx.fillStyle = '#727272'; gunCtx.fillRect(0, 0, GUN_SIZE, GUN_SIZE); gunCtx.drawImage(video, 0, 0, nw, nh);
+    var d = gunCtx.getImageData(0, 0, GUN_SIZE, GUN_SIZE).data, N = GUN_SIZE * GUN_SIZE;
+    for (var i = 0; i < N; i++) { gunInput[i] = d[i * 4] / 255; gunInput[i + N] = d[i * 4 + 1] / 255; gunInput[i + 2 * N] = d[i * 4 + 2] / 255; }
+    gunSess.run({ images: new ort.Tensor('float32', gunInput, [1, 3, GUN_SIZE, GUN_SIZE]) }).then(function (res) {
+      var o = res.output0.data, A = 8400, cands = [];
+      for (var k = 0; k < A; k++) { var c = o[4 * A + k]; if (c >= GUN_THRESH) cands.push({ cx: o[k], cy: o[A + k], w: o[2 * A + k], h: o[3 * A + k], s: c }); }
+      cands.sort(function (a, b) { return b.s - a.s; });
+      var keep = [];
+      for (var a = 0; a < cands.length && keep.length < 3; a++) {
+        var ok = true;
+        for (var b = 0; b < keep.length; b++) { if (Math.abs(cands[a].cx - keep[b].cx) < (cands[a].w + keep[b].w) / 2 && Math.abs(cands[a].cy - keep[b].cy) < (cands[a].h + keep[b].h) / 2) { ok = false; break; } }
+        if (ok) keep.push(cands[a]);
+      }
+      gunBoxes = keep.map(function (k) { return { x: (k.cx - k.w / 2) / r, y: (k.cy - k.h / 2) / r, w: k.w / r, h: k.h / r, s: k.s }; });
+      gunLastAt = performance.now(); gunBusy = false;
+    }).catch(function (e) { gunBusy = false; console.warn('gun run', e); });
+  }
+
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = 'status' + (cls ? ' ' + cls : ''); }
+  try { roomEl.value = localStorage.getItem('ss-room') || ''; } catch (e) {}
+
+  // ---------- full screen ----------
+  var fullBtn = $('full');
+  function isFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement) || stage.classList.contains('max'); }
+  function setMax(on) {
+    stage.classList.toggle('max', on); document.body.classList.toggle('maxed', on);
+    fullBtn.textContent = on ? 'Exit' : 'Full screen';
+  }
+  fullBtn.addEventListener('click', function () {
+    if (isFull()) {
+      if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      setMax(false); return;
+    }
+    var req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+    if (req) {
+      var p; try { p = req.call(stage); } catch (e) { p = null; }
+      if (p && p.then) { p.then(function () { setMax(true); }).catch(function () { setMax(true); }); return; }
+    }
+    setMax(true);   // iPhone Safari: no element fullscreen, so pin the camera over the whole screen instead
+  });
+  function onFsChange() { if (!(document.fullscreenElement || document.webkitFullscreenElement) && stage.classList.contains('max') && !fallbackOnly) setMax(false); }
+  var fallbackOnly = !(stage.requestFullscreen || stage.webkitRequestFullscreen);
+  document.addEventListener('fullscreenchange', onFsChange); document.addEventListener('webkitfullscreenchange', onFsChange);
+
+  function topicFor(room) { return 'spidersense/' + room + '/det'; }
+
+  function connect(room) {
+    return new Promise(function (resolve, reject) {
+      var i = 0;
+      function tryNext() {
+        if (i >= BROKERS.length) return reject(new Error('could not reach a relay'));
+        var url = BROKERS[i++];
+        setStatus('Connecting to relay…');
+        var c = mqtt.connect(url, { clientId: 'sentry-' + Math.random().toString(16).slice(2, 10), keepalive: 20, reconnectPeriod: 2000, connectTimeout: 6000 });
+        var settled = false;
+        c.on('connect', function () { if (settled) return; settled = true; resolve(c); });
+        c.on('error', function () { if (settled) return; settled = true; c.end(true); tryNext(); });
+        setTimeout(function () { if (!settled) { settled = true; c.end(true); tryNext(); } }, 7000);
+      }
+      tryNext();
+    });
+  }
+
+  function fitCanvas() {
+    overlay.width = video.videoWidth || 720; overlay.height = video.videoHeight || 960;
+  }
+
+  // ---------- tracker: a detection must repeat in the same spot before it is reported ----------
+  // Each class keeps tracks {cx, cy, w, h, s, hits, miss}. A new sighting within MATCH of a track's center
+  // extends it; a track is "confirmed" once hits >= NEED for that class; it dies after MISS_MAX empty frames.
+  var RULES = {
+    person:   { thresh: 0.55, need: 3, missMax: 2 },
+    KNIFE:    { thresh: 0.30, need: 2, missMax: 3 },
+    BAT:      { thresh: 0.35, need: 2, missMax: 3 },
+    SCISSORS: { thresh: 0.35, need: 2, missMax: 3 },
+    GUN:      { thresh: 0.45, need: 2, missMax: 2 }   // gun runs ~2x/s, so 2 hits is about a second
+  };
+  var tracks = {};
+  function updateTracks(kind, sightings, W, H) {
+    var rule = RULES[kind], list = tracks[kind] || (tracks[kind] = []);
+    var match = 0.18 * Math.max(W, H);
+    list.forEach(function (t) { t.seen = false; });
+    for (var i = 0; i < sightings.length; i++) {
+      var s = sightings[i]; if (s.s < rule.thresh) continue;
+      var cx = s.x + s.w / 2, cy = s.y + s.h / 2, best = null, bd = match;
+      for (var j = 0; j < list.length; j++) { var t = list[j]; if (t.seen) continue; var d = Math.hypot(t.cx - cx, t.cy - cy); if (d < bd) { bd = d; best = t; } }
+      if (best) { best.cx = cx; best.cy = cy; best.w = s.w; best.h = s.h; best.s = s.s; best.hits++; best.miss = 0; best.seen = true; }
+      else list.push({ cx: cx, cy: cy, w: s.w, h: s.h, s: s.s, hits: 1, miss: 0, seen: true });
+    }
+    for (var k = list.length - 1; k >= 0; k--) { var tk = list[k]; if (!tk.seen) { tk.miss++; if (tk.miss > rule.missMax) list.splice(k, 1); } }
+    return list.filter(function (t) { return t.hits >= rule.need; });
+  }
+  function drawBox(t, label, color, lw) {
+    var x = t.cx - t.w / 2, y = t.cy - t.h / 2;
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.strokeRect(x, y, t.w, t.h);
+    ctx.fillStyle = color; ctx.fillRect(x, y - 26, 12 + label.length * 11, 26);
+    ctx.fillStyle = '#140000'; ctx.font = 'bold 18px Rajdhani, sans-serif'; ctx.fillText(label, x + 6, y - 7);
+  }
+
+  var lastT = 0, fpsAcc = 0, fpsN = 0, lastBeat = 0;
+  function loop() {
+    if (!running) return;
+    var now = performance.now();
+    model.detect(video, 10, 0.25).then(function (preds) {
+      if (!running) return;
+      var W = overlay.width, H = overlay.height;
+      ctx.clearRect(0, 0, W, H);
+      var people = [], weapons = [];
+      var WEAPON = { knife: 'KNIFE', 'baseball bat': 'BAT', scissors: 'SCISSORS' };
+      var raw = { person: [], KNIFE: [], BAT: [], SCISSORS: [], GUN: [] };
+      for (var k = 0; k < preds.length; k++) {
+        var p = preds[k], b = p.bbox;
+        var kind = p.class === 'person' ? 'person' : WEAPON[p.class];
+        if (!kind) continue;
+        // a "person" box that is far wider than tall is furniture, not a person
+        if (kind === 'person' && b[2] > b[3] * 1.6) continue;
+        raw[kind].push({ x: b[0], y: b[1], w: b[2], h: b[3], s: p.score });
+      }
+      // gun boxes from the second detector (kept for 1.2 s after the last run so they don't flicker)
+      if (now - gunLastAt < 1200) for (var gi = 0; gi < gunBoxes.length; gi++) raw.GUN.push(gunBoxes[gi]);
+      if (gunState === 'ready' && now - gunLastAt > 450) runGun();
+
+      var conf;
+      conf = updateTracks('person', raw.person, W, H);
+      for (var pi = 0; pi < conf.length; pi++) {
+        var t = conf[pi];
+        people.push({ x: +((t.cx / W) * 2 - 1).toFixed(3), h: +(t.h / H).toFixed(3), s: +t.s.toFixed(2) });
+        drawBox(t, 'PERSON ' + Math.round(t.s * 100) + '%', 'rgba(255,59,59,.85)', 4);
+      }
+      ['KNIFE', 'BAT', 'SCISSORS', 'GUN'].forEach(function (wk) {
+        var c = updateTracks(wk, raw[wk], W, H);
+        for (var wi = 0; wi < c.length; wi++) {
+          var t = c[wi];
+          weapons.push({ x: +((t.cx / W) * 2 - 1).toFixed(3), y: +((t.cy / H) * 2 - 1).toFixed(3), kind: wk, s: +t.s.toFixed(2) });
+          drawBox(t, wk + ' ' + Math.round(t.s * 100) + '%', 'rgba(255,210,59,.9)', 6);
+        }
+      });
+      // faint boxes for things seen once but not yet confirmed, so you can see it thinking
+      ctx.setLineDash([8, 8]); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(223,230,238,.5)';
+      Object.keys(tracks).forEach(function (kk) { tracks[kk].forEach(function (t) { if (t.hits < RULES[kk].need) ctx.strokeRect(t.cx - t.w / 2, t.cy - t.h / 2, t.w, t.h); }); });
+      ctx.setLineDash([]);
+      $('pill-people').textContent = people.length + (people.length === 1 ? ' person' : ' people');
+      $('pill-people').className = 'pill' + (people.length ? ' alert' : '');
+      $('pill-weapon').hidden = !weapons.length; if (weapons.length) $('pill-weapon').textContent = weapons.map(function (w) { return w.kind; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).join(' + ');
+      $('pill-gun').textContent = 'gun detector ' + gunState;
+      $('s-people').textContent = people.length + (weapons.length ? ' +' + weapons[0].kind : '');
+      $('s-people').className = 'big' + (people.length || weapons.length ? ' alert' : '');
+      stage.classList.toggle('armed', people.length > 0 || weapons.length > 0);
+
+      var portrait = H >= W;
+      var msg = { t: Date.now(), fovH: portrait ? 55 : 69, fovV: portrait ? 69 : 55, people: people, weapons: weapons };
+      // send every frame with people or weapons, otherwise a heartbeat every 1.5 s
+      if (people.length || weapons.length || now - lastBeat > 1500) {
+        lastBeat = now;
+        try { client.publish(topicFor(roomEl.value.trim().toUpperCase()), JSON.stringify(msg), { qos: 0, retain: false }); sent++; $('s-sent').textContent = sent; } catch (e) {}
+      }
+      var dt = now - lastT; lastT = now;
+      if (dt > 0) { fpsAcc += 1000 / dt; fpsN++; if (fpsN >= 10) { $('s-fps').textContent = Math.round(fpsAcc / fpsN); fpsAcc = 0; fpsN = 0; } }
+      setTimeout(loop, 60);
+    }).catch(function (e) { setStatus('Detector error: ' + e.message, 'bad'); setTimeout(loop, 500); });
+  }
+
+  startBtn.addEventListener('click', function () {
+    var room = roomEl.value.trim().toUpperCase();
+    if (room.length < 4) { setStatus('Type the room code from the headset page first.', 'bad'); return; }
+    try { localStorage.setItem('ss-room', room); } catch (e) {}
+    startBtn.disabled = true;
+    var p = navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+      ? navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      : Promise.reject(new Error('camera not available in this browser'));
+    setStatus('Asking for the camera…');
+    p.then(function (s) {
+      stream = s; video.srcObject = s;
+      return new Promise(function (res) { video.onloadedmetadata = function () { video.play().then(res, res); }; });
+    }).then(function () {
+      fitCanvas();
+      setStatus('Loading the person detector (first time takes ~10 s)…');
+      return cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    }).then(function (m) {
+      model = m;
+      loadGun(); // 12 MB, loads in the background; people detection starts without waiting for it
+      return connect(room);
+    }).then(function (c) {
+      client = c;
+      c.on('close', function () { if (running) setStatus('Relay dropped, reconnecting…', 'bad'); });
+      c.on('connect', function () { if (running) setStatus('Watching. Room ' + room + '.', 'good'); });
+      running = true; lastT = performance.now();
+      setStatus('Watching. Room ' + room + '.', 'good');
+      startBtn.hidden = true; stopBtn.hidden = false; roomEl.disabled = true;
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { wake = w; }).catch(function () {});
+      loop();
+    }).catch(function (e) {
+      startBtn.disabled = false;
+      setStatus('Could not start: ' + (e && e.message ? e.message : e), 'bad');
+    });
+  });
+  stopBtn.addEventListener('click', function () {
+    running = false;
+    if (client) { try { client.end(true); } catch (e) {} client = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+    ctx.clearRect(0, 0, overlay.width, overlay.height); tracks = {};
+    startBtn.hidden = false; startBtn.disabled = false; stopBtn.hidden = true; roomEl.disabled = false;
+    stage.classList.remove('armed');
+    setStatus('Stopped.');
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && running && navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { wake = w; }).catch(function () {});
+  });
+})();
+</script>
+</body>
+</html>
